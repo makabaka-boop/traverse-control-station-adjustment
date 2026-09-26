@@ -29,6 +29,15 @@ export function adjustedPoints(result: AdjustmentResult): Point[] {
   );
 }
 
+/**
+ * 控制站指定坐标（独立仪器定准、原值保留的中间站位）。
+ * 平差后折线的对应顶点必然精确等于这些点；用于叠画标记与包围盒。
+ */
+export function controlStationPoints(result: AdjustmentResult): Point[] {
+  if (result.mode !== 'control' || !result.controls) return [];
+  return result.controls.map((st) => ({ x: st.x, y: st.y }));
+}
+
 export interface Bounds {
   minX: number;
   maxX: number;

@@ -55,13 +55,8 @@ export function stringifyResult(result: AdjustmentResult): string {
     totalW <= BigInt(Number.MAX_SAFE_INTEGER) &&
     totalW >= BigInt(Number.MIN_SAFE_INTEGER);
 
-  const tree: JsonValue = {
-    schema: 'traverse-adjustment/1',
-    closure: { x: rawBigInt(result.closureX), y: rawBigInt(result.closureY) },
-    // 安全范围内给数值；超出时为 null，请使用 totalWeightExact
-    totalWeight: totalWSafe ? Number(totalW) : null,
-    totalWeightExact: totalW.toString(),
-    edges: result.edges.map((e) => ({
+  const edges = result.edges.map((e) => {
+    const base = {
       id: e.id,
       dx: e.dx,
       dy: e.dy,
@@ -70,8 +65,52 @@ export function stringifyResult(result: AdjustmentResult): string {
       corrY: rawBigInt(e.corrY),
       adjustedDx: rawBigInt(BigInt(e.dx) + e.corrX),
       adjustedDy: rawBigInt(BigInt(e.dy) + e.corrY),
-    })),
+    };
+    // 普通平差（含旧数组输入）字段契约保持不变；控制模式额外附段/锁信息
+    if (result.mode === 'control') {
+      return {
+        ...base,
+        segment: (e.segmentIndex ?? 0) + 1,
+        locked: e.locked === true,
+      };
+    }
+    return base;
+  });
+
+  const tree: JsonValue = {
+    schema: 'traverse-adjustment/1',
+    closure: { x: rawBigInt(result.closureX), y: rawBigInt(result.closureY) },
+    // 安全范围内给数值；超出时为 null，请使用 totalWeightExact
+    totalWeight: totalWSafe ? Number(totalW) : null,
+    totalWeightExact: totalW.toString(),
+    edges,
   };
+
+  if (result.mode === 'control' && result.controls && result.segments) {
+    tree.mode = 'control';
+    tree.controls = result.controls.map((st) => ({
+      endEdgeNo: st.endEdge + 1, // 1 基边序号：该边终点即控制站
+      x: st.x,
+      y: st.y,
+    }));
+    tree.lockedEdgeIds = [...result.lockedEdgeIds!];
+    tree.segments = result.segments.map((s) => ({
+      segment: s.index + 1,
+      startEdgeNo: s.startEdgeIndex + 1,
+      endEdgeNo: s.endEdgeIndex + 1,
+      from: { x: rawBigInt(s.fromX), y: rawBigInt(s.fromY) },
+      to: { x: rawBigInt(s.toX), y: rawBigInt(s.toY) },
+      raw: { x: rawBigInt(s.rawX), y: rawBigInt(s.rawY) },
+      requiredCorrection: {
+        x: rawBigInt(s.requiredCorrX),
+        y: rawBigInt(s.requiredCorrY),
+      },
+      adjustableEdgeIds: [...s.adjustableEdgeIds],
+      lockedEdgeIds: [...s.lockedEdgeIds],
+      adjustableWeightExact: s.adjustableWeight.toString(),
+      endStation: s.endStationIndex === null ? null : s.endStationIndex + 1,
+    }));
+  }
 
   return encode(tree, '  ', 0);
 }

@@ -31,6 +31,10 @@ export function ResultTable({ result }: ResultTableProps) {
     0n,
   );
 
+  const isControl = result.mode === 'control';
+  // 普通模式 5 列前导（#/id/dx/dy/weight）；控制模式多“区段/锁定”两列
+  const leadCols = isControl ? 7 : 5;
+
   return (
     <div className="table-wrap">
       <table className="result-table">
@@ -41,6 +45,8 @@ export function ResultTable({ result }: ResultTableProps) {
             <th>dx</th>
             <th>dy</th>
             <th>weight</th>
+            {isControl && <th>区段</th>}
+            {isControl && <th>锁定</th>}
             <th>Δx 修正</th>
             <th>Δy 修正</th>
             <th>平差后 dx</th>
@@ -49,12 +55,16 @@ export function ResultTable({ result }: ResultTableProps) {
         </thead>
         <tbody>
           {result.edges.map((e, i) => (
-            <tr key={e.id}>
+            <tr key={e.id} className={e.locked ? 'locked-row' : undefined}>
               <td className="num dim">{i + 1}</td>
               <td className="mono">{e.id}</td>
               <td className="num">{fmt(e.dx)}</td>
               <td className="num">{fmt(e.dy)}</td>
               <td className="num">{fmt(e.weight)}</td>
+              {isControl && <td className="num dim">{(e.segmentIndex ?? 0) + 1}</td>}
+              {isControl && (
+                <td className="center">{e.locked ? '🔒 锁边' : ''}</td>
+              )}
               <td className={`num corr ${e.corrX > 0n ? 'pos' : e.corrX < 0n ? 'neg' : ''}`}>
                 {signed(e.corrX)}
               </td>
@@ -72,8 +82,10 @@ export function ResultTable({ result }: ResultTableProps) {
         </tbody>
         <tfoot>
           <tr>
-            <td colSpan={5} className="dim">
-              合计（修正量须抵消闭合差）
+            <td colSpan={leadCols} className="dim">
+              {isControl
+                ? '合计（各段修正使控制站与终点精确到位；锁边修正恒为 0）'
+                : '合计（修正量须抵消闭合差）'}
             </td>
             <td className={`num ${sumCorrX !== 0n ? 'pos' : ''}`}>{signed(sumCorrX)}</td>
             <td className={`num ${sumCorrY !== 0n ? 'pos' : ''}`}>{signed(sumCorrY)}</td>

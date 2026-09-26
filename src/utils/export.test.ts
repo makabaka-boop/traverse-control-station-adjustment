@@ -44,4 +44,27 @@ describe('stringifyResult', () => {
     // 文本中包含精确字面量（无引号）
     expect(json).toContain(`"totalWeightExact": "${BigInt(big) * 2n + 1n}"`);
   });
+
+  it('旧数组输入（普通平差）导出契约不变：无 mode/controls/segments/locked 字段，边记录仅 8 个旧键', () => {
+    const edges: RawEdge[] = [
+      { id: 'a', dx: 5, dy: 7, weight: 2 },
+      { id: 'b', dx: -3, dy: -2, weight: 1 },
+      { id: 'c', dx: -1, dy: -4, weight: 1 },
+    ];
+    const parsed = JSON.parse(stringifyResult(adjustTraverse(edges))) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['closure', 'edges', 'schema', 'totalWeight', 'totalWeightExact'].sort(),
+    );
+    expect('mode' in parsed).toBe(false);
+    expect('controls' in parsed).toBe(false);
+    expect('segments' in parsed).toBe(false);
+    expect('lockedEdgeIds' in parsed).toBe(false);
+    const firstEdge = parsed.edges as Array<Record<string, unknown>>;
+    expect(Object.keys(firstEdge[0]).sort()).toEqual(
+      ['adjustedDx', 'adjustedDy', 'corrX', 'corrY', 'dx', 'dy', 'id', 'weight'].sort(),
+    );
+  });
 });

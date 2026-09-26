@@ -347,6 +347,87 @@ button.primary:hover:not(:disabled) {
   font-size: 12px;
 }
 
+/* —— 控制站平差面板 —— */
+.control-panel {
+  margin-top: 14px;
+  background: #fffaf3;
+  border-color: #fed7aa;
+}
+
+.control-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.control-tag {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: #c2410c;
+  padding-bottom: 7px;
+}
+
+.control-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.control-field select,
+.coord-input,
+.lock-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: #fff;
+  color: var(--text);
+}
+
+.coord-input {
+  width: 92px;
+}
+
+.lock-field {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lock-input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.control-remove {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.banner.stale {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.result-table tr.locked-row {
+  background: #f8fafc;
+}
+
+.result-table td.center {
+  text-align: center;
+  color: #c2410c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import {
   adjustedPoints,
   boundsOf,
+  controlStationPoints,
   originalPoints,
   type Bounds,
   type Point,
@@ -20,14 +21,28 @@ interface TraverseChartProps {
  * 保证交付的 PNG 必然来自当前平差结果。
  */
 export function resultSignature(result: AdjustmentResult): string {
-  return [
+  const edgeSig = result.edges
+    .map((e) => `${e.id}:${e.dx},${e.dy},${e.weight}=${e.corrX},${e.corrY}`)
+    .join('|');
+  const base = [
     result.closureX.toString(),
     result.closureY.toString(),
     result.totalWeight.toString(),
-    result.edges
-      .map((e) => `${e.id}:${e.dx},${e.dy},${e.weight}=${e.corrX},${e.corrY}`)
-      .join('|'),
+    edgeSig,
   ].join('#');
+  if (result.mode !== 'control' || !result.controls) return base;
+  // 控制模式：把采纳的控制站与锁边也纳入签名，防止过期位图被当成当前成果
+  const stationSig = result.controls
+    .map((s) => `${s.endEdge}:${s.x},${s.y}`)
+    .join(';');
+  const lockSig = (result.lockedEdgeIds ?? []).slice().sort().join(',');
+  const segSig = (result.segments ?? [])
+    .map(
+      (s) =>
+        `${s.startEdgeIndex}-${s.endEdgeIndex}:${s.requiredCorrX},${s.requiredCorrY}`,
+    )
+    .join(';');
+  return `${base}#control=${stationSig}@${lockSig}@{${segSig}}`;
 }
 
 const SIGNATURE_KEY = Symbol.for('traverse-chart.result-signature');
@@ -56,6 +71,7 @@ export function canvasMatchesResult(
 const PADDING = 48;
 const COLOR_ORIGINAL = '#9ca3af';
 const COLOR_ADJUSTED = '#2563eb';
+const COLOR_CONTROL = '#ea580c';
 const COLOR_GRID = '#e5e7eb';
 const COLOR_AXIS = '#94a3b8';
 
@@ -133,7 +149,8 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
 
   const orig = originalPoints(result.edges);
   const adj = adjustedPoints(result);
-  const all = [...orig, ...adj];
+  const controls = controlStationPoints(result);
+  const all = [...orig, ...adj, ...controls];
   const view = buildView(cssW, cssH, boundsOf(all));
   const { toPx, step, bounds } = view;
 
@@ -203,6 +220,30 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
     ctx.fill();
   });
 
+  // —— 控制站（独立仪器定准的中间站位，原值保留）：橙色方块 + 十字 ——
+  controls.forEach((p, i) => {
+    const [x, y] = toPx(p);
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = COLOR_CONTROL;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(x - 5, y - 5, 10, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 8, y);
+    ctx.lineTo(x + 8, y);
+    ctx.moveTo(x, y - 8);
+    ctx.lineTo(x, y + 8);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = COLOR_CONTROL;
+    ctx.textAlign = 'center';
+    ctx.fillText(`K${i + 1}(${p.x},${p.y})`, x, y - 12);
+    ctx.textAlign = 'left';
+  });
+
   // —— 图例 ——
   const lx = 12;
   let ly = 18;
@@ -224,6 +265,21 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
   drawLegend(COLOR_ORIGINAL, true, '原始折线');
   drawLegend(COLOR_ADJUSTED, false, '平差后折线（闭合）');
   drawLegend('#ef4444', true, '闭合差缺口');
+  if (controls.length > 0) {
+    // 方块记号：独立定准的中间控制站
+    const lyc = ly - 10;
+    ctx.save();
+    ctx.strokeStyle = COLOR_CONTROL;
+    ctx.fillStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(lx + 8, lyc - 5, 10, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#374151';
+    ctx.fillText('控制站（固定）', lx + 34, ly);
+  }
 
   // 单位注记
   ctx.fillStyle = COLOR_AXIS;

@@ -11,7 +11,7 @@ const validInput = JSON.stringify([
 describe('App 集成', () => {
   it('合法输入完成平差，合计行两轴严格为 0', () => {
     render(<App />);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: validInput } });
+    fireEvent.change(screen.getByLabelText('顺序边 JSON 输入'), { target: { value: validInput } });
     fireEvent.click(screen.getByRole('button', { name: '执行平差' }));
 
     // 3 行数据
@@ -25,7 +25,7 @@ describe('App 集成', () => {
 
   it('非法字段拒绝整份数据：报错且上次有效图形保留', () => {
     render(<App />);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: validInput } });
+    fireEvent.change(screen.getByLabelText('顺序边 JSON 输入'), { target: { value: validInput } });
     fireEvent.click(screen.getByRole('button', { name: '执行平差' }));
     expect(screen.getByTestId('sum-adjusted-x').textContent).toBe('0');
 
@@ -34,7 +34,7 @@ describe('App 集成', () => {
       { id: 'A', dx: 0, dy: 0, weight: 1 }, // 重复 id
       { id: 'C', dx: -1, dy: -4, weight: 1 },
     ]);
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: invalid } });
+    fireEvent.change(screen.getByLabelText('顺序边 JSON 输入'), { target: { value: invalid } });
     fireEvent.click(screen.getByRole('button', { name: '执行平差' }));
 
     const alert = screen.getByRole('alert');

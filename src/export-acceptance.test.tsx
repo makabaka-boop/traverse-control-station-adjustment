@@ -86,7 +86,7 @@ function abortError() {
 }
 
 function runAdjustment(json: string) {
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: json } });
+  fireEvent.change(screen.getByLabelText('顺序边 JSON 输入'), { target: { value: json } });
   fireEvent.click(screen.getByRole('button', { name: '执行平差' }));
 }
 

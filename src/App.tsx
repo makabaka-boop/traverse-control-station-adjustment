@@ -4,7 +4,14 @@ import {
   TraverseChart,
 } from './components/TraverseChart';
 import { ResultTable } from './components/ResultTable';
+import { ControlEditor } from './components/ControlEditor';
 import { adjustTraverse } from './core/adjustment';
+import { adjustWithControls } from './core/controlAdjustment';
+import {
+  emptyControlDraft,
+  validateControlDraft,
+  type ControlDraft,
+} from './core/controlOptions';
 import { parseTraverseInput } from './core/parse';
 import type { AdjustmentResult, RawEdge } from './core/types';
 import { SAMPLE_JSON } from './core/sample';
@@ -28,6 +35,16 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const canvasHostRef = useRef<HTMLDivElement>(null);
 
+  // —— 控制站平差模式状态 ——
+  const [controlDraft, setControlDraft] = useState<ControlDraft>(emptyControlDraft());
+  // 已采纳控制参数的指纹；null 表示当前结果为普通平差（无控制结果）
+  const [adoptedKey, setAdoptedKey] = useState<string | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const [infeasible, setInfeasible] = useState<{
+    segmentIndex: number;
+    message: string;
+  } | null>(null);
+
   const handleChartReadyChange = useCallback((ready: boolean) => {
     setChartReady(ready);
   }, []);
@@ -42,18 +59,50 @@ export function App() {
     const closed = result.closureX === 0n && result.closureY === 0n;
     return {
       closed,
+      mode: result.mode === 'control' ? ('control' as const) : ('plain' as const),
       fx: result.closureX.toString(),
       fy: result.closureY.toString(),
       w: result.totalWeight.toString(),
       count: result.edges.length,
+      stationCount: result.controls?.length ?? 0,
+      lockedCount: result.lockedEdgeIds?.length ?? 0,
     };
   }, [result]);
 
+  // 草稿实时校验（不触碰已采纳结果）；非法时给出明确错误并标记过期
+  const draftValidation = useMemo(() => {
+    if (rawEdges.length === 0) return null;
+    return validateControlDraft(controlDraft, rawEdges);
+  }, [controlDraft, rawEdges]);
+
+  const isControlAdopted = result?.mode === 'control';
+
+  // 过期判定：没有结果、草稿非法、或草稿指纹与已采纳结果不一致
+  const controlStale = useMemo(() => {
+    if (rawEdges.length === 0 || !result) return false;
+    if (!draftValidation || !draftValidation.ok) return true;
+    if (isControlAdopted) return draftValidation.key !== adoptedKey;
+    // 当前为普通平差：任何非空控制配置都算未采纳的过期编辑
+    const d = draftValidation.options;
+    return d.stations.length > 0 || d.lockedEdgeIds.length > 0;
+  }, [
+    rawEdges.length,
+    result,
+    draftValidation,
+    isControlAdopted,
+    adoptedKey,
+  ]);
+
+  // 更换边数据：控制站配置全部失效，回到普通平差（站位下标/锁边 id 需重新指定）
   const applyEdges = (edges: RawEdge[]) => {
     const adjusted = adjustTraverse(edges);
     setRawEdges(edges);
     setResult(adjusted);
     setError(null);
+    setControlDraft(emptyControlDraft());
+    setAdoptedKey(null);
+    setControlError(null);
+    setInfeasible(null);
     setNotice(`平差完成：${edges.length} 条边，两轴修正后整数和严格为 0`);
   };
 
@@ -80,6 +129,53 @@ export function App() {
     setError(null);
     setNotice(null);
     setChartReady(false);
+    setControlDraft(emptyControlDraft());
+    setAdoptedKey(null);
+    setControlError(null);
+    setInfeasible(null);
+  };
+
+  // 采纳控制配置并平差：非法或不可行均不覆盖已采纳结果，只明确标记
+  const handleApplyControl = () => {
+    const parsed = validateControlDraft(controlDraft, rawEdges);
+    if (!parsed.ok) {
+      setControlError(parsed.error);
+      setInfeasible(null);
+      return;
+    }
+    const outcome = adjustWithControls(rawEdges, parsed.options);
+    if (!outcome.feasible) {
+      setControlError(null);
+      setInfeasible({ segmentIndex: outcome.segmentIndex, message: outcome.message });
+      return;
+    }
+    setResult(outcome.result);
+    setAdoptedKey(parsed.key);
+    setControlError(null);
+    setInfeasible(null);
+    setError(null);
+    const { stations, lockedEdgeIds } = parsed.options;
+    setNotice(
+      `控制站平差完成：${stations.length} 个控制站、${lockedEdgeIds.length} 条锁边、` +
+        `${outcome.result.segments?.length ?? 0} 个区段，控制站与最终终点均精确到位`,
+    );
+  };
+
+  // 恢复普通平差：丢弃控制编辑，按当前边重新整网平差
+  const handleRevertControl = () => {
+    setResult(adjustTraverse(rawEdges));
+    setControlDraft(emptyControlDraft());
+    setAdoptedKey(null);
+    setControlError(null);
+    setInfeasible(null);
+    setNotice('已恢复普通整网平差');
+  };
+
+  const handleDraftChange = (next: ControlDraft) => {
+    setControlDraft(next);
+    // 编辑即清除“不可行”结论与编辑错误提示（下次采纳时重新判定）
+    setControlError(null);
+    setInfeasible(null);
   };
 
   const getCanvas = (): HTMLCanvasElement | null =>
@@ -158,6 +254,7 @@ export function App() {
           </p>
           <textarea
             className="json-input"
+            aria-label="顺序边 JSON 输入"
             spellCheck={false}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -215,10 +312,28 @@ export function App() {
               <div>
                 <dt>状态</dt>
                 <dd className={closureInfo.closed ? 'zero-check' : 'ok'}>
-                  {closureInfo.closed ? '原本闭合' : '已严格闭合'}
+                  {closureInfo.mode === 'control'
+                    ? `控制平差·${closureInfo.stationCount} 站 ${closureInfo.lockedCount} 锁`
+                    : closureInfo.closed
+                      ? '原本闭合'
+                      : '已严格闭合'}
                 </dd>
               </div>
             </dl>
+          )}
+
+          {result && rawEdges.length > 0 && (
+            <ControlEditor
+              draft={controlDraft}
+              edges={rawEdges}
+              validationError={controlError}
+              stale={controlStale}
+              infeasible={infeasible}
+              onDraftChange={handleDraftChange}
+              onApply={handleApplyControl}
+              onRevert={handleRevertControl}
+              adopted={isControlAdopted}
+            />
           )}
 
           <h2 className="algo-title">算法口径（可逐毫米复算）</h2>
@@ -276,7 +391,9 @@ export function App() {
           )}
           {result && (
             <p className="hint chart-meta">
-              原始边数 {rawEdges.length}；灰虚线为原始路线（红色为未闭合缺口），蓝实线为平差后路线。
+              原始边数 {rawEdges.length}；灰虚线为原始路线（红色为未闭合缺口），蓝实线为
+              {result.mode === 'control' ? '经控制站平差后路线，橙色方块为固定控制站' : '平差后路线'}
+              。
             </p>
           )}
         </section>
