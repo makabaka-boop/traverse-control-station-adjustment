@@ -1,4 +1,8 @@
-import type { AdjustmentResult } from '../core/types';
+import {
+  isControlledResult,
+  type AnyAdjustmentResult,
+  type ControlledAdjustmentResult,
+} from '../core/types';
 
 type JsonValue =
   | RawBigInt
@@ -48,8 +52,12 @@ function encode(value: JsonValue, indent: string, level: number): string {
  * double，这是 JS/JSON 的固有限制。因此同时提供 `totalWeightExact`
  * 十进制字符串字段，任何消费者都能逐位复算。修正量与平差后分量恒在
  * 安全整数范围内（|分量|≤10⁶，|修正量|≤2×10⁸），可安全解析为 number。
+ *
+ * 普通平差结果（schema traverse-adjustment/1）的字段与键序保持原有契约不变；
+ * 控制站平差结果（schema traverse-adjustment/2）在其后追加控制站、锁边与
+ * 逐区段明细，与表格、叠画共用同一份结果对象。
  */
-export function stringifyResult(result: AdjustmentResult): string {
+export function stringifyResult(result: AnyAdjustmentResult): string {
   const totalW = result.totalWeight;
   const totalWSafe =
     totalW <= BigInt(Number.MAX_SAFE_INTEGER) &&
@@ -73,7 +81,34 @@ export function stringifyResult(result: AdjustmentResult): string {
     })),
   };
 
+  if (isControlledResult(result)) {
+    tree.schema = 'traverse-adjustment/2';
+    tree.controlStations = result.controlStations.map((s) => ({
+      vertexIndex: s.vertexIndex,
+      x: s.x,
+      y: s.y,
+    }));
+    tree.lockedEdgeIds = [...result.lockedEdgeIds];
+    tree.segments = controlledSegmentsJson(result);
+  }
+
   return encode(tree, '  ', 0);
+}
+
+/** 区段明细：端点固定坐标、原始位移、所需修正与可调/锁定边清单（BigInt 精确） */
+function controlledSegmentsJson(result: ControlledAdjustmentResult): JsonValue {
+  return result.segments.map((s) => ({
+    index: s.index,
+    fromVertex: s.fromVertex,
+    toVertex: s.toVertex,
+    from: { x: rawBigInt(s.fromX), y: rawBigInt(s.fromY) },
+    to: { x: rawBigInt(s.toX), y: rawBigInt(s.toY) },
+    rawDisplacement: { x: rawBigInt(s.rawX), y: rawBigInt(s.rawY) },
+    requiredCorrection: { x: rawBigInt(s.needX), y: rawBigInt(s.needY) },
+    adjustableEdgeIds: [...s.adjustableEdgeIds],
+    lockedEdgeIds: [...s.lockedEdgeIds],
+    totalWeightExact: s.totalWeight.toString(),
+  }));
 }
 
 /** 触发浏览器下载文本/二进制内容（纯前端、离线可用） */
@@ -90,8 +125,11 @@ export function downloadBlob(content: BlobPart, filename: string, type: string):
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-export function downloadResultJson(result: AdjustmentResult): void {
-  downloadBlob(stringifyResult(result), 'traverse-adjustment.json', 'application/json');
+export function downloadResultJson(result: AnyAdjustmentResult): void {
+  const filename = isControlledResult(result)
+    ? 'traverse-adjustment-controlled.json'
+    : 'traverse-adjustment.json';
+  downloadBlob(stringifyResult(result), filename, 'application/json');
 }
 
 /**

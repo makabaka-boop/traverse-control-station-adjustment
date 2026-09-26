@@ -3,10 +3,23 @@ import {
   canvasMatchesResult,
   TraverseChart,
 } from './components/TraverseChart';
+import { ControlPanel } from './components/ControlPanel';
 import { ResultTable } from './components/ResultTable';
 import { adjustTraverse } from './core/adjustment';
+import {
+  adjustTraverseControlled,
+  configKey,
+  describeInfeasible,
+  emptyControlDraft,
+  validateControlConfig,
+} from './core/control';
 import { parseTraverseInput } from './core/parse';
-import type { AdjustmentResult, RawEdge } from './core/types';
+import type {
+  AnyAdjustmentResult,
+  ControlConfig,
+  ControlDraft,
+  RawEdge,
+} from './core/types';
 import { SAMPLE_JSON } from './core/sample';
 import {
   downloadCanvasPng,
@@ -15,10 +28,14 @@ import {
   shareOrDownloadCanvas,
 } from './utils/export';
 
+type Mode = 'free' | 'controlled';
+
+const EMPTY_CONFIG: ControlConfig = { stations: [], lockedEdgeIds: [] };
+
 export function App() {
   const [inputText, setInputText] = useState('');
   // lastValid 保留上次有效图形：非法输入只更新错误提示，不触碰它
-  const [result, setResult] = useState<AdjustmentResult | null>(null);
+  const [result, setResult] = useState<AnyAdjustmentResult | null>(null);
   const [rawEdges, setRawEdges] = useState<RawEdge[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -27,6 +44,12 @@ export function App() {
   const [chartReady, setChartReady] = useState(false);
   const [exporting, setExporting] = useState(false);
   const canvasHostRef = useRef<HTMLDivElement>(null);
+
+  // —— 控制站平差模式 ——
+  const [mode, setMode] = useState<Mode>('free');
+  const [controlDraft, setControlDraft] = useState<ControlDraft>(emptyControlDraft);
+  const [adoptedControl, setAdoptedControl] = useState<ControlConfig | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
 
   const handleChartReadyChange = useCallback((ready: boolean) => {
     setChartReady(ready);
@@ -49,11 +72,35 @@ export function App() {
     };
   }, [result]);
 
+  /**
+   * 采纳一份控制配置并重算。任一区段不可行时整体拒绝：
+   * 不覆盖当前结果，只在控制面板给出定位该区段的错误。
+   */
+  const runControlled = (edges: RawEdge[], config: ControlConfig): boolean => {
+    const outcome = adjustTraverseControlled(edges, config);
+    if (!outcome.ok) {
+      setControlError(describeInfeasible(outcome.infeasible, edges.length));
+      return false;
+    }
+    setControlError(null);
+    setAdoptedControl(config);
+    setResult(outcome.result);
+    return true;
+  };
+
   const applyEdges = (edges: RawEdge[]) => {
-    const adjusted = adjustTraverse(edges);
     setRawEdges(edges);
-    setResult(adjusted);
     setError(null);
+    setControlError(null);
+    // 新边集使既有控制配置失效：回到空配置草稿
+    setControlDraft(emptyControlDraft());
+    if (mode === 'controlled') {
+      // 空配置等价于整圈一个区段，必然可行
+      runControlled(edges, EMPTY_CONFIG);
+    } else {
+      setAdoptedControl(null);
+      setResult(adjustTraverse(edges));
+    }
     setNotice(`平差完成：${edges.length} 条边，两轴修正后整数和严格为 0`);
   };
 
@@ -80,6 +127,45 @@ export function App() {
     setError(null);
     setNotice(null);
     setChartReady(false);
+    setControlDraft(emptyControlDraft());
+    setAdoptedControl(null);
+    setControlError(null);
+  };
+
+  const handleModeChange = (next: Mode) => {
+    setMode(next);
+    if (rawEdges.length === 0) return;
+    if (next === 'free') {
+      setControlError(null);
+      setResult(adjustTraverse(rawEdges));
+    } else {
+      // 回到控制站模式：沿用已采纳配置（无则空配置）重算
+      runControlled(rawEdges, adoptedControl ?? EMPTY_CONFIG);
+    }
+  };
+
+  // 编辑态即时校验：非法编辑禁用采纳，并把已采纳结果标记为过期
+  const draftValidation = useMemo(
+    () => (rawEdges.length > 0 ? validateControlConfig(controlDraft, rawEdges) : null),
+    [controlDraft, rawEdges],
+  );
+  const liveControlError =
+    draftValidation && !draftValidation.ok ? draftValidation.error : null;
+  const controlStale = useMemo(() => {
+    if (mode !== 'controlled' || !adoptedControl) return false;
+    if (!draftValidation || !draftValidation.ok) return true;
+    return configKey(draftValidation.config) !== configKey(adoptedControl);
+  }, [mode, adoptedControl, draftValidation]);
+
+  const handleApplyControl = () => {
+    if (rawEdges.length === 0 || !draftValidation || !draftValidation.ok) return;
+    if (runControlled(rawEdges, draftValidation.config)) {
+      const { stations, lockedEdgeIds } = draftValidation.config;
+      showNotice(
+        `控制站平差完成：${stations.length} 个控制站、${lockedEdgeIds.length} 条锁定边，` +
+          `逐段修正后严格回到原点`,
+      );
+    }
   };
 
   const getCanvas = (): HTMLCanvasElement | null =>
@@ -150,6 +236,27 @@ export function App() {
       <main className="layout">
         <section className="panel input-panel">
           <h2>输入顺序边（JSON 数组）</h2>
+          <fieldset className="mode-switch">
+            <legend>平差模式</legend>
+            <label>
+              <input
+                type="radio"
+                name="adjust-mode"
+                checked={mode === 'free'}
+                onChange={() => handleModeChange('free')}
+              />
+              常规平差
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="adjust-mode"
+                checked={mode === 'controlled'}
+                onChange={() => handleModeChange('controlled')}
+              />
+              控制站平差
+            </label>
+          </fieldset>
           <p className="hint">
             每条边仅含 <code>id</code>（唯一 ASCII）、
             <code>dx</code>/<code>dy</code>（|分量| ≤ 10⁶ 的整数）、
@@ -158,6 +265,7 @@ export function App() {
           </p>
           <textarea
             className="json-input"
+            aria-label="顺序边 JSON"
             spellCheck={false}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
@@ -213,6 +321,12 @@ export function App() {
                 <dd>{closureInfo.w}</dd>
               </div>
               <div>
+                <dt>模式</dt>
+                <dd data-testid="mode-indicator">
+                  {mode === 'controlled' ? '控制站平差' : '常规平差'}
+                </dd>
+              </div>
+              <div>
                 <dt>状态</dt>
                 <dd className={closureInfo.closed ? 'zero-check' : 'ok'}>
                   {closureInfo.closed ? '原本闭合' : '已严格闭合'}
@@ -236,6 +350,10 @@ export function App() {
             </li>
             <li>余数相同按 id 的 UTF-8 字节序（小者优先）。</li>
             <li>修正量总和恒等于 −f，修正后两轴整数和严格为 0。</li>
+            <li>
+              控制站模式下：控制站与起终点把整圈切成连续区段，每段以固定端点坐标
+              重算该段待分配总额，只在未锁边间按同一口径分配；锁边修正恒为 0。
+            </li>
           </ol>
         </section>
 
@@ -281,6 +399,22 @@ export function App() {
           )}
         </section>
       </main>
+
+      {mode === 'controlled' && rawEdges.length > 0 && (
+        <section className="panel control-section">
+          <ControlPanel
+            edges={rawEdges}
+            draft={controlDraft}
+            onDraftChange={setControlDraft}
+            onApply={handleApplyControl}
+            applyDisabled={liveControlError !== null}
+            liveError={liveControlError}
+            stale={controlStale}
+            panelError={controlError}
+            result={result}
+          />
+        </section>
+      )}
 
       {result && (
         <section className="panel table-panel">

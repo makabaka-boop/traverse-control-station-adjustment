@@ -2,14 +2,15 @@ import { useEffect, useRef } from 'react';
 import {
   adjustedPoints,
   boundsOf,
+  controlStationPoints,
   originalPoints,
   type Bounds,
   type Point,
 } from '../core/geometry';
-import type { AdjustmentResult } from '../core/types';
+import { isControlledResult, type AnyAdjustmentResult } from '../core/types';
 
 interface TraverseChartProps {
-  result: AdjustmentResult | null;
+  result: AnyAdjustmentResult | null;
   /** 上报“当前 result 的位图是否已实际绘制到画布”，供导出入口做可观察的可用性判断 */
   onReadyChange?: (ready: boolean) => void;
 }
@@ -18,9 +19,12 @@ interface TraverseChartProps {
  * 当前平差结果的确定性签名：成功绘制某 result 后打在 canvas 上。
  * 导出时比对签名，可拒绝隐藏/尺寸为零期间残留的旧画布位图，
  * 保证交付的 PNG 必然来自当前平差结果。
+ *
+ * 普通平差结果的签名构成保持原样（逐字节兼容）；
+ * 控制站平差在末尾追加控制站与区段修正段，二者签名不可能相同。
  */
-export function resultSignature(result: AdjustmentResult): string {
-  return [
+export function resultSignature(result: AnyAdjustmentResult): string {
+  const base = [
     result.closureX.toString(),
     result.closureY.toString(),
     result.totalWeight.toString(),
@@ -28,6 +32,14 @@ export function resultSignature(result: AdjustmentResult): string {
       .map((e) => `${e.id}:${e.dx},${e.dy},${e.weight}=${e.corrX},${e.corrY}`)
       .join('|'),
   ].join('#');
+  if (isControlledResult(result)) {
+    const stations = result.controlStations
+      .map((s) => `v${s.vertexIndex}@${s.x},${s.y}`)
+      .join(';');
+    const locks = [...result.lockedEdgeIds].sort().join(';');
+    return `${base}#controlled[${stations}]{${locks}}`;
+  }
+  return base;
 }
 
 const SIGNATURE_KEY = Symbol.for('traverse-chart.result-signature');
@@ -42,7 +54,7 @@ export function canvasResultSignature(canvas: HTMLCanvasElement): string | null 
 /** 画布是否为给定结果的、已成功绘制的位图（可见、尺寸非零且签名匹配） */
 export function canvasMatchesResult(
   canvas: HTMLCanvasElement,
-  result: AdjustmentResult,
+  result: AnyAdjustmentResult,
 ): boolean {
   return (
     canvas.clientWidth > 0 &&
@@ -56,6 +68,7 @@ export function canvasMatchesResult(
 const PADDING = 48;
 const COLOR_ORIGINAL = '#9ca3af';
 const COLOR_ADJUSTED = '#2563eb';
+const COLOR_CONTROL = '#ea580c';
 const COLOR_GRID = '#e5e7eb';
 const COLOR_AXIS = '#94a3b8';
 
@@ -113,8 +126,28 @@ function drawPolyline(
   ctx.stroke();
 }
 
+/** 菱形标记（控制站） */
+function drawDiamond(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - r);
+  ctx.lineTo(x + r, y);
+  ctx.lineTo(x, y + r);
+  ctx.lineTo(x - r, y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
 /** 绘制当前平差结果；返回位图是否真正生成（ctx 可用且尺寸非零） */
-function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boolean {
+function renderChart(
+  canvas: HTMLCanvasElement,
+  result: AnyAdjustmentResult,
+): boolean {
   const ctx = canvas.getContext('2d');
   if (!ctx) return false;
   const dpr = window.devicePixelRatio || 1;
@@ -131,9 +164,13 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
+  const controlled = isControlledResult(result);
   const orig = originalPoints(result.edges);
   const adj = adjustedPoints(result);
-  const all = [...orig, ...adj];
+  const controls = controlled
+    ? controlStationPoints(result.controlStations)
+    : [];
+  const all = [...orig, ...adj, ...controls];
   const view = buildView(cssW, cssH, boundsOf(all));
   const { toPx, step, bounds } = view;
 
@@ -187,7 +224,7 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
   ctx.lineWidth = 2.5;
   drawPolyline(ctx, adj, toPx);
 
-  // 顶点
+  // 原始顶点
   orig.forEach((p) => {
     const [x, y] = toPx(p);
     ctx.fillStyle = COLOR_ORIGINAL;
@@ -202,6 +239,24 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
     ctx.arc(x, y, i === 0 ? 4.5 : 3.5, 0, Math.PI * 2);
     ctx.fill();
   });
+
+  // —— 控制站（独立仪器定准、原值保留的中间站位）——
+  if (controlled) {
+    ctx.save();
+    ctx.strokeStyle = '#9a3412';
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = COLOR_CONTROL;
+    result.controlStations.forEach((s, i) => {
+      const [x, y] = toPx({ x: s.x, y: s.y });
+      drawDiamond(ctx, x, y, 6);
+      ctx.fillStyle = '#7c2d12';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`K${i + 1}=v${s.vertexIndex}`, x, y - 9);
+      ctx.fillStyle = COLOR_CONTROL;
+    });
+    ctx.restore();
+  }
 
   // —— 图例 ——
   const lx = 12;
@@ -222,8 +277,13 @@ function renderChart(canvas: HTMLCanvasElement, result: AdjustmentResult): boole
     ly += 20;
   };
   drawLegend(COLOR_ORIGINAL, true, '原始折线');
-  drawLegend(COLOR_ADJUSTED, false, '平差后折线（闭合）');
+  drawLegend(
+    COLOR_ADJUSTED,
+    false,
+    controlled ? '完整调整线（区段端点固定）' : '平差后折线（闭合）',
+  );
   drawLegend('#ef4444', true, '闭合差缺口');
+  if (controlled) drawLegend(COLOR_CONTROL, false, '控制站（原值保留）');
 
   // 单位注记
   ctx.fillStyle = COLOR_AXIS;
@@ -272,7 +332,7 @@ export function TraverseChart({ result, onReadyChange }: TraverseChartProps) {
     <canvas
       ref={canvasRef}
       className="traverse-canvas"
-      aria-label="原始与平差后导线叠画图"
+      aria-label="原始线、控制站与完整调整线叠画图"
     />
   );
 }

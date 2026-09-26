@@ -1,4 +1,4 @@
-import type { AdjustmentResult, RawEdge } from './types';
+import type { AdjustmentResult, ControlStation, RawEdge } from './types';
 
 export interface Point {
   x: number;
@@ -27,6 +27,11 @@ export function adjustedPoints(result: AdjustmentResult): Point[] {
       dy: e.dy + Number(e.corrY),
     })),
   );
+}
+
+/** 控制站（独立仪器定准的中间站位）坐标点 */
+export function controlStationPoints(stations: ControlStation[]): Point[] {
+  return stations.map((s) => ({ x: s.x, y: s.y }));
 }
 
 export interface Bounds {
